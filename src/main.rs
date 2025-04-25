@@ -8,7 +8,8 @@ mod helpers;
 mod bucket;
 mod decompilation;
 mod command_line_interface;
-
+mod palette;
+mod tileset;
 
 fn main() {
 	command_line_interface::handle_arguments()

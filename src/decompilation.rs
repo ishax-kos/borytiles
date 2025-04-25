@@ -1,19 +1,20 @@
-use std::{fs::{exists, read_to_string}, path::{Path, PathBuf}};
+use std::{fs::{exists, read_dir, read_to_string}, path::{Path, PathBuf}};
 use image::GrayImage;
-use crate::compilation::{palette::{self, Color24}, tileset};
+use regex::Regex;
+use crate::{helpers::*, palette::{self, Color24}, tileset};
  
 
 
 pub fn decompile_primary(path: &Path, number_of_layers: usize) -> Vec<image::RgbaImage> {
   let tiles = load_tileset(path);
   let metatiles = load_metatileset(path).unwrap();
-  let palettes = load_palette_folder(path, 16, 16);
+  let palettes = load_jasc_palette_folder(path);
   assert_eq!(metatiles.len() % number_of_layers, 0);
   let metatiles_tall = (metatiles.len() as u32).div_ceil(8 * number_of_layers as u32);
   let mut layer_images = Vec::with_capacity(number_of_layers);
 
   
-  palette::save_palette_image(&PathBuf::from("colors.png"), &palettes);
+  palette::write_palette_image(&PathBuf::from("colors.png"), &palettes);
   tileset::save_tileset_image(&PathBuf::from("tiles.png"), &tiles);
 
   let image_size_x = 16 * 8;
@@ -39,7 +40,9 @@ pub fn decompile_primary(path: &Path, number_of_layers: usize) -> Vec<image::Rgb
         //   for (tp_x, cell) in row.into_iter().enumerate() {
         for (tp_y, row) in flip(tile.into_iter(), flip_v).enumerate() {
           for (tp_x, cell) in flip(row.into_iter(), flip_h).enumerate() {
-            let mut color: image::Rgba<u8> = palette[cell as usize].into();
+						let mut color: image::Rgba<u8>;
+						color = palette::convert_optional_color(palette[cell as usize]);
+
             if cell == 0 {color.0[3] = 0;}
             let pixel_x = (mt_x+mtt_x+tp_x) as u32;
             let pixel_y = (mt_y+mtt_y+tp_y) as u32;
@@ -110,22 +113,22 @@ pub fn load_metatileset(path: &Path) -> std::io::Result<Vec<Metatile_layer>> {
 }
 
 
-pub struct Metatileset {
-  pub(crate) height: u32,
-  pub(crate) metatile_layers: Vec<Metatile_layer>
-}
+// pub struct Metatileset {
+//   pub(crate) height: u32,
+//   pub(crate) metatile_layers: Vec<Metatile_layer>
+// }
 
 
-impl Metatileset {
-  pub fn new(metatile_layers: Vec<Metatile_layer>, height: u32) -> Self {
-    assert_eq!(metatile_layers.len() % height as usize, 0);
-    Metatileset{metatile_layers, height}
-  }
+// impl Metatileset {
+//   pub fn new(metatile_layers: Vec<Metatile_layer>, height: u32) -> Self {
+//     assert_eq!(metatile_layers.len() % height as usize, 0);
+//     Metatileset{metatile_layers, height}
+//   }
 
-  pub fn from_path(path: &Path, height: u32) -> Self {
-    Self::new(load_metatileset(path).unwrap(), height)
-  }
-}
+//   pub fn from_path(path: &Path, height: u32) -> Self {
+//     Self::new(load_metatileset(path).unwrap(), height)
+//   }
+// }
 
 
 pub enum Load_png_indexed_problem {
@@ -139,7 +142,10 @@ pub fn load_png_indexed(path: &Path) -> Result<GrayImage, Load_png_indexed_probl
   let decoder = png::Decoder::new(std::fs::File::open(path).unwrap());
   let mut reader = decoder.read_info().unwrap();
   let mut buf = vec![0; reader.output_buffer_size()];
-  if reader.info().color_type != png::ColorType::Indexed {return Err(Load_png_indexed_problem::not_indexed);}
+	match reader.info().color_type {
+		png::ColorType::Indexed | png::ColorType::Grayscale => {},
+		_ => {return Err(Load_png_indexed_problem::not_indexed);}
+	} 
   let info = reader.next_frame(&mut buf).unwrap();
   let bytes = &buf[..info.buffer_size()];
   let info = reader.info();
@@ -208,24 +214,37 @@ fn load_tileset_not_indexed(path: &Path) -> Vec<[[u8; 8]; 8]> {
 }
 
 
-pub fn load_palette_folder(path: &Path, expected_size: usize, expected_count: usize) -> Vec<Vec<Color24>> {
+pub fn load_jasc_palette_folder(path: &Path) -> Vec<Vec<Option<Color24>>> {
   let path = path.join("palettes");
   // path.is_dir();
-  let mut palettes = Vec::with_capacity(expected_count);
-  for entry in 0..expected_count {
-    let path = path.join(format!("{entry:02}.pal"));
-    if exists(&path).unwrap() {
-      palettes.push(read_jasc_palette(&path).unwrap());
-    }
-    else {
-      palettes.push(vec![Color24{rgb:[0;3]}; expected_size])
-    }
-    
+  let mut palettes = vec![];
+
+	let name_matcher = Regex::new(r"(\d\d)\.pal").unwrap();
+	// let file_names = vec![];
+	
+  for entry in read_dir(&path).unwrap() {
+		if let Ok(entry) = entry {
+			let file_name = entry.file_name();
+			let file_name = file_name.to_str().unwrap();
+			if let Some(captures) = name_matcher.captures(file_name) {
+				let match_string = captures.get(1).unwrap().as_str();
+				// println!("the number text is {match_string}");
+				let number = match_string.parse::<usize>().unwrap();
+				if number >= 16 {
+					eprintln!("Palette count exceeded 16");
+					break;
+				}
+				growable_vec_insert(&mut palettes, number,
+					||read_jasc_palette(&path.join(file_name)).unwrap(),
+					||vec![]
+				);
+			}
+		}
   }
   palettes
 }
 
-pub fn read_jasc_palette<'a>(path: &Path) -> Result<Vec<Color24>, String> {
+pub fn read_jasc_palette<'a>(path: &Path) -> Result<Vec<Option<Color24>>, String> {
   let text = read_to_string(path).unwrap();
   let mut lines = text.lines();
   if lines.next() == Some("JASC-PAL") && lines.next() == Some("0100") {
@@ -233,29 +252,29 @@ pub fn read_jasc_palette<'a>(path: &Path) -> Result<Vec<Color24>, String> {
     let mut colors = Vec::with_capacity(color_count);
     for (i, line) in lines.enumerate() {
       let mut color = [0u8;3];
-      for (c, num) in line.split(" ").enumerate() {
-        color[c] = u8::from_str_radix(num, 10).unwrap();
-      }
-      colors.push(Color24::from(color))
+			let line = line.trim();
+			if line.trim() == "-" {
+				colors.push(None);
+			}
+			else {
+				for (c, num) in line.split(" ").enumerate() {
+					color[c] = u8::from_str_radix(num, 10).unwrap();
+				}
+				colors.push(Some(Color24::from(color)));
+			}
     }
-    if colors.len() != color_count {return Err(format!("size {color_count} does not match number of color rows {}", colors.len()))}
+    if colors.len() != color_count {
+			let file = path.file_name().unwrap().to_str().unwrap();
+			let color_rows = colors.len();
+			return Err(format!(
+				"palette file {file} of size {color_count} does not match number of color rows {color_rows}"
+			))
+		}
     return Ok(colors);
   }
   else {
     return Err(format!("missing JASC header on {}", path.display()))
   }
-}
-
-
-fn apply_flips<In1, I1, In2, I2, T>(grid: In1, flip_v: bool, flip_h: bool) -> std::iter::Map<FlipIter<I1>, impl FnMut(In2) -> FlipIter<I2>>
-where 
-In1: IntoIterator<IntoIter = I1>, I1: DoubleEndedIterator<Item = In2>,
-In2: IntoIterator<IntoIter = I2>, I2: DoubleEndedIterator<Item = T>
-{
-  let iter = FlipIter::<I1>{inner:grid.into_iter(), flipped:flip_v};
-
-  let iter = iter.map(move |a:In2|FlipIter::<I2>{inner:a.into_iter(), flipped:flip_h});
-  iter
 }
 
 struct FlipIter<I: DoubleEndedIterator> {

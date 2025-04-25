@@ -1,3 +1,5 @@
+use std::env::current_dir;
+
 use clap::{Parser, Subcommand};
 
 use crate::decompilation::decompile_primary;
@@ -36,6 +38,8 @@ enum Command_line_interface {
 #[derive(Debug, Subcommand)]
 enum Compile_tileset {
 	primary{
+		#[arg(long="root")]
+		project_root: Option<String>,
 		name: String,
 		// layer_name_pattern: Option<String>,
 		layer_names: String,
@@ -43,6 +47,8 @@ enum Compile_tileset {
 		max_palette_size: Option<usize>,
 	},
 	secondary{
+		#[arg(long="root")]
+		project_root: Option<String>,
 		name: String,
 		// layer_name_pattern: Option<String>,
 		layer_names: String,
@@ -57,11 +63,15 @@ enum Compile_tileset {
 #[derive(Debug, Subcommand)]
 enum Decompile_tileset {
 	primary{
+		#[arg(long="root")]
+		project_root: Option<String>,
 		name: String,
 		layer_count: usize,
 		output_layer_names: String,
 	},
 	secondary{
+		#[arg(long="root")]
+		project_root: Option<String>,
 		name: String,
 		layer_count: usize,
 		output_layer_names: String,
@@ -74,12 +84,15 @@ enum Decompile_tileset {
 impl Decompile_tileset {
 	fn go(self) {
 		match self {
-			Decompile_tileset::primary { 
+			Decompile_tileset::primary {
+				project_root,
 				name, 
 				layer_count, 
 				output_layer_names 
 			} => {
-				let path = get_primary_path().join(name);
+				let path = determine_project_root(project_root).unwrap()
+					.join(raw_primary_path)
+					.join(name);
 				let images = decompile_primary(&path, layer_count);
 				let output_layer_names = split_layer_names(&output_layer_names);
 				let output_path = path.join("decompiled_tileset");
@@ -91,6 +104,7 @@ impl Decompile_tileset {
 				}
 			},
 			Decompile_tileset::secondary { 
+				project_root,
 				name, 
 				layer_count, 
 				output_layer_names, 
@@ -106,7 +120,8 @@ impl Compile_tileset {
 		let secondary_path = get_secondary_path();
 
 		match self {
-			Compile_tileset::primary { 
+			Compile_tileset::primary {
+				project_root, 
 				name, 
 				max_palette_count,
 				// layer_name_pattern, 
@@ -114,13 +129,16 @@ impl Compile_tileset {
 
 				max_palette_size, 
 			} => {
+				let path = determine_project_root(project_root).unwrap()
+					.join(raw_primary_path)
+					.join(name);
 				let max_palette_size = max_palette_size.unwrap_or(16);
 				let max_palette_count = max_palette_count.unwrap_or(6);
-				let path = primary_path.join(name);
 				let layer_names = split_layer_names(&layer_names);
 				compile_primary(&path, &layer_names).unwrap();
 			},
 			Compile_tileset::secondary { 
+				project_root,
 				name, 
 				// layer_name_pattern, 
 				layer_names, 
@@ -129,24 +147,37 @@ impl Compile_tileset {
 
 				primary_name, 
 			} => {
+				let project_root = determine_project_root(project_root).unwrap();
+				let path = project_root
+					.join(raw_secondary_path)
+					.join(&name);
+
 				let max_palette_size = max_palette_size.unwrap_or(16);
-				// let primary_max_palette_count = primary_max_palette_count.unwrap_or(6);
 				let max_palette_count = max_palette_count.unwrap_or(7);
 
-				let primary_path = primary_path.join(primary_name);
+				let primary_path = project_root
+					.join(primary_path)
+					.join(primary_name);
 
 				let primary_tiles = decompilation::load_tileset(&primary_path);
-				let primary_palettes = decompilation::load_palette_folder(&primary_path, max_palette_size, 6);
 
-				let path = secondary_path.join(name);
 				let layer_names = split_layer_names(&layer_names);
 			}
 		}
 	}
-
 }
 
 
 fn split_layer_names(string: &str) -> Vec<&str> {
 	string.split(",").map(|s|s.trim()).collect()
+}
+
+
+fn determine_project_root(root_arg: Option<String>) -> Result<std::path::PathBuf, std::io::Error> {
+	if let Some(root_arg) = root_arg {
+		PathBuf::from(root_arg).canonicalize()
+	}
+	else {
+		current_dir()
+	}
 }

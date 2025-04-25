@@ -1,18 +1,18 @@
 
 
-use crate::{bucket, helpers::*, unbind};
-use std::{collections::{BTreeMap, BTreeSet, BinaryHeap}, f32::consts::TAU, fs::write, i32, iter::zip, ops::Index, path::Path, vec};
+use crate::{bucket, decompilation::read_jasc_palette, helpers::*, unbind};
+use std::{collections::{BTreeMap, BTreeSet}, f32::consts::TAU, fs::{exists, write}, i32, ops::{Index, IndexMut}, path::{Iter, Path}, vec};
 use clap::builder::styling::Color;
-use image::{ImageFormat, ImageReader, Rgba, RgbaImage};
+use image::{ImageFormat, ImageReader, Rgb, Rgba, RgbaImage};
 use oklab::Oklab;
 
-use super::tileset::Color_separated_tile;
+use super::tileset::Shape_indexable_tile;
 
 pub static palette_size_limit: u8 = 16;
 
 #[derive(Debug)]
 pub struct Color_context {
-	color_to_index: BTreeMap<Color24, u8>,
+	color_to_index: BTreeMap<Color24, Color_index>,
 	index_to_color: Vec<Color24>,
 }
 
@@ -36,21 +36,29 @@ impl Color_context {
 	// 	}
 	// 	set
 	// }
-	pub fn insert_get_index(&mut self, color: Color24) -> u8 {
+	pub fn insert_get_index(&mut self, color: Color24) -> Color_index {
 		if let Some(index) = self.color_to_index.get(&color) {
 			return *index
 		}
-		let index = self.index_to_color.len() as u8;
+		let index = Color_index(self.index_to_color.len() as u8);
 		self.color_to_index.insert(color, index);
 		self.index_to_color.push(color);
 		index
 	}
 
-	pub fn get_index(&self, color: Color24) -> u8 {
+	pub fn get_index(&self, color: Color24) -> Color_index {
 		self.color_to_index[&color]
 	}
-	pub fn get_color(&self, index: u8) -> Color24 {
+	pub fn get_color(&self, Color_index(index): Color_index ) -> Color24 {
 		self.index_to_color[index as usize]
+	}
+	pub fn get_color_rgba(&self, index: Option<Color_index> ) -> Rgba<u8> {
+		if let Some(Color_index(index)) = index {
+			self.index_to_color[index as usize].into()
+		}
+		else {
+			Rgba([0;4])
+		}
 	}
 
 	pub fn get_indexed_color_set<I>(&self, colors: I) -> Indexed_color_set
@@ -66,20 +74,14 @@ impl Color_context {
 
 
 	pub fn save_palette_image<'a, Iter>(&self, path: &Path, color_sets: Iter) -> ()
-	where Iter: ExactSizeIterator<Item = &'a Indexed_color_set> {
-		println!("{}", path.display());
-		
-
-		let mut colors: Vec<Vec<Color24>> = Vec::new();
+	where Iter: Iterator<Item = &'a Indexed_color_set> {
+		let mut colors: Vec<_> = Vec::new();
 
 		for color_set in color_sets {
-			colors.push(self.get_true_color_palette(color_set));
-			// for (x, color) in .iter().enumerate() {
-			// 	output_image.put_pixel(x as u32, y as u32, (*color).into());
-			// }
+			colors.push(self.get_true_color_palette(color_set).into_iter().map(Some).collect());
 		};
 
-		save_palette_image(path, &colors);
+		write_palette_image(path, &colors);
 
 	}
 
@@ -93,7 +95,7 @@ impl Color_context {
 			let mut mask = 1;
 			for _ in 0..64 {
 				if (mask & group) != 0 {
-					color32_list.push(self.get_color(i));
+					color32_list.push(self.get_color(Color_index(i)));
 				}
 				mask <<= 1;
 				if i == 255 {break}
@@ -106,53 +108,8 @@ impl Color_context {
 		// println!("organized: {}", color32_list.len());
 		color32_list
 	}
-	
-
-	pub fn test_palette(&mut self, 
-		path: &Path, 
-		other_colors: &BTreeSet<Indexed_color_set>, 
-		tiles: &BTreeSet<Color_separated_tile>
-	) -> BTreeSet<Indexed_color_set> {
-
-		let test_pal = read_palette_image(&path);
-
-		let bad_colors: Vec<Color24> = test_pal.iter()
-			.flatten()
-			.filter_map(|color| *color)
-			.filter(|color| !self.color_to_index.contains_key(color))
-			// .cloned()
-			.collect();
-		if !bad_colors.is_empty() {
-			save_color_list_image(&PathBuf::from("bad_colors.png"), bad_colors.iter());
-			println!("Provided palette has extra colors.");
-		}
-
-		let test_colors: BTreeSet<Indexed_color_set> = test_pal.into_iter()
-			.map(|p| self.insert_get_indexed_color_set(p.into_iter().filter_map(|color| color))).collect();
-
-
-		let union_result = filter_subsets(&(test_colors.union(&other_colors).cloned().collect()));
-		
-		if union_result == test_colors {
-			println!("Provided palette has full coverage!");
-			// return Some();
-		}
-		else {
-			println!("Provided palette does not cover every tile.");
-			// return None;
-
-			// let tile_color_sets: BTreeSet<BTreeSet<Color32>> = tiles.iter().map(|tile| {
-			// 	let tile_color_set: BTreeSet<Color32> = tile.colors.values().map(|i|self.get_color(*i)).collect();
-			// 	tile_color_set
-			// }).collect();
-
-			// for color_set in union_result.difference(&test_colors) {
-			// }
-		}
-		test_colors
-
-	}
 }
+
 
 fn wrapped_distance(distance: f32, a: f32, b: f32) -> f32 {
 	distance/2.0 - (distance/2.0 - (b - a).abs()).abs()
@@ -178,6 +135,15 @@ impl Color24 {
 		}
 
 		Some(Color24{rgb:[value[0], value[1], value[2]]})
+	}
+}
+
+pub fn convert_optional_color(color: Option<Color24>) -> Rgba<u8> {
+	if let Some(color) = color {
+		color.into()
+	}
+	else {
+		Rgba::<u8>([0,0,0,0])
 	}
 }
 
@@ -246,8 +212,8 @@ pub fn read_palette_image(path: &Path) -> Vec<Vec<Option<Color24>>> {
 		.decode().unwrap()
 		.into_rgba8();
 	
-	let mut palette_collection: Vec<Vec<Option<Color24>>> = Vec::new();
-	
+	let mut palette_collection = vec![vec![]; image_data.height() as usize];
+
 	for y in 0..image_data.height() {
 		let mut palette = Vec::new();
 		for x in 0..image_data.width() {
@@ -265,7 +231,7 @@ pub fn read_palette_image(path: &Path) -> Vec<Vec<Option<Color24>>> {
 		}
 
 		if palette.iter().any(|c|c.is_some() && *c != palette[0]) {
-			palette_collection.push(palette);
+			palette_collection[y as usize] = palette;
 		}
 	};
 	
@@ -274,21 +240,62 @@ pub fn read_palette_image(path: &Path) -> Vec<Vec<Option<Color24>>> {
 	return palette_collection;
 }
 
-pub fn write_jasc_palettes(path: &Path, palettes: &Vec<Vec<Option<Color24>>>) -> Result<(), ()> {
-	for (i, palette) in palettes.into_iter().enumerate() {
-		if palette.len() > 16 {return Err(())}
-		let mut string = format!("JASC-PAL\n0100\n16\n-\n");
-		for mcolor in palette {
-			if let Some(color) = mcolor {
-				string.push_str(&format!("{} {} {}\n", color.rgb[0], color.rgb[1], color.rgb[2]));
-			}
-			else {
-				string.push_str(&format!("-\n"));
-			}
-		}
-		write(path.join(format!("{i:02}.pal")), string).unwrap();
+
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
+pub struct Color_index (u8);
+
+// impl Color_index {
+// 	pub fn transparent() -> Self {
+// 		Color_index(0)
+// 	}
+// }
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
+pub struct Position_in_palette_concrete (u8);
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
+pub enum Position_in_palette {
+	Undetermined,
+	Absolute(u8),
+	Indirect(Palette_index, Color_index)
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone)]
+pub struct Palette_info (pub BTreeMap<Color_index, Position_in_palette>, pub Option<Palette_index>);
+
+
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
+pub struct Palette_index (pub u8);
+pub type Color_sequence = Vec<Color_index>;
+
+
+pub struct Palette_list(pub Vec<(Indexed_color_set, Palette_info)>);
+
+impl Index<Palette_index> for Palette_list {
+	type Output = (Indexed_color_set, Palette_info);
+
+	fn index(&self, index: Palette_index) -> &Self::Output {
+		&self.0[index.0 as usize]
 	}
-	Ok(())
+}
+impl IndexMut<Palette_index> for Palette_list {
+	fn index_mut(&mut self, index: Palette_index) -> &mut Self::Output {
+		&mut self.0[index.0 as usize]
+	}
+}
+
+impl Palette_list {
+	pub fn insert_ics(&mut self, other: Indexed_color_set) {
+		let index = other;
+		let info = Palette_info(
+			other.into_iter().map(|a|(a, Position_in_palette::Undetermined)).collect(),
+			None
+		);
+		self.0.push((index, info));
+		
+	}
 }
 
 
@@ -334,14 +341,15 @@ impl Indexed_color_set {
 	pub fn is_subset_of(&self, other: &Self) -> bool {
 		self.union(other) == *other
 	}
-	pub fn has_encompasing_relation(&self, other: &Self) -> Option<Self> {
+	pub fn has_encompassing_relation(&self, other: &Self) -> Option<Self> {
 		let un = self.union(other);
-		if un ==  *self {return Some( *self)}
-		if un == *other {return Some(*other)}
+		if un ==  *self {return Some(un)}
+		if un == *other {return Some(un)}
 		return None
 	}
 
-	pub fn set_bit(&mut self, bit: u8) -> bool {
+	pub fn set_bit(&mut self, bit: Color_index) -> bool {
+		let Color_index(bit) = bit;
 		let sub_bit = bit & 0b0011_1111;
 		let section = bit >> 6;
 		let set_mask = 1 << sub_bit;
@@ -349,7 +357,8 @@ impl Indexed_color_set {
 		self.bits[section as usize] |= set_mask;
 		return prev != 0;
 	}
-	pub fn unset_bit(&mut self, bit: u8) -> bool {
+	pub fn unset_bit(&mut self, bit: Color_index) -> bool {
+		let Color_index(bit) = bit;
 		let sub_bit = bit & 0b0011_1111;
 		let section = bit >> 6;
 		let get_mask = 1 << sub_bit;
@@ -359,17 +368,32 @@ impl Indexed_color_set {
 		return prev != 0;
 	}
 
-	pub fn get_bit(&self, bit: u8) -> bool {
+	pub fn get_bit(&self, bit: Color_index) -> bool {
+		let Color_index(bit) = bit;
 		let sub_bit = bit & 0b0011_1111;
 		let section = bit >> 6;
 		let get_mask = 1 << sub_bit;
 		
 		return (self.bits[section as usize] & get_mask) != 0;
 	}
+
+	// pub fn to_vector(&self) -> Vec<Color_index> {
+	// 	let mut accum = Vec::new();
+	// 	for g in 0..4 {
+	// 		let mut group = self.bits[g as usize].clone(); 
+	// 		for b in 0..64 {
+	// 			if (group & 1) == 1 {
+	// 				accum.push(Color_index((g << 6) & b))
+	// 			}
+	// 			group <<= 1;
+	// 		}
+	// 	}
+	// 	accum
+	// }
 }
 
-impl FromIterator<u8> for Indexed_color_set {
-	fn from_iter<T: IntoIterator<Item = u8>>(iter: T) -> Self {
+impl FromIterator<Color_index> for Indexed_color_set {
+	fn from_iter<T: IntoIterator<Item = Color_index>>(iter: T) -> Self {
 		let mut set = Indexed_color_set::new();
 		for index in iter {
 			set.set_bit(index);
@@ -378,6 +402,41 @@ impl FromIterator<u8> for Indexed_color_set {
 	}
 }
 
+impl IntoIterator for Indexed_color_set {
+	type IntoIter = Indexed_color_set_iter;
+	
+	type Item = Color_index;
+	
+	fn into_iter(self) -> Self::IntoIter {
+		Indexed_color_set_iter{bits: self.bits, index: 0}
+	}
+}
+
+pub struct Indexed_color_set_iter {
+	bits: [u64; 4],
+	index: u16,
+}
+impl Iterator for Indexed_color_set_iter {
+	type Item = Color_index;
+
+	fn next(&mut self) -> Option<Self::Item> {
+		if self.index >= 256 {return None}
+		let g = self.index >> 6;
+		let b = self.index & 0b0011_1111;
+		for g in g..4 {
+			let group = &mut self.bits[g as usize]; 
+			for _ in b..64 {
+				let res = Color_index(self.index as u8);
+				self.index += 1;
+				*group >>= 1;
+				if (*group & 1) == 1 {
+					return Some(res);
+				}
+			}
+		}
+		return None;
+	}
+}
 
 
 
@@ -471,10 +530,10 @@ pub fn condense_palettes_by_overlap(color_set_pool: BTreeSet<Indexed_color_set>)
 		for Merged_color_sets{set, components} in overlaps {
 			// If each component of the overlap is still in the pool, remove them and add their union to the pool
 			if components.iter().all(|comp| color_set_pool.contains(comp)) {
-				for comp in components {
-					// color_set_pool.remove(&comp);
-					// if color_set_pool.is_empty() {break}
-				}
+				// for comp in components {
+				// 	color_set_pool.remove(&comp);
+				// 	if color_set_pool.is_empty() {break}
+				// }
 				color_set_pool.insert(set);
 			}
 		}
@@ -590,89 +649,6 @@ impl Merged_color_sets {
 	}
 }
 
-// impl PartialOrd for Merged_color_sets {
-// 	fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-// 		self.score.partial_cmp(&other.score)
-// 	}
-// }
-// impl Ord for Merged_color_sets {
-// 	fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-// 		self.score.cmp(&other.score)
-// 	}
-// }
-
-
-
-
-// mod color_graph {
-// 	use std::hash::Hash;
-
-// use super::*;
-
-// 	#[derive(Debug, Eq, Clone)]
-// 	struct Node<'a> {
-// 		colors: [u8; 2],
-// 		// score: i16,
-// 		color_sets: BTreeSet<&'a Indexed_color_set>
-// 	}
-// 	impl<'a> Node<'a> {
-
-// 	}
-
-// 	impl<'a> PartialOrd for Node<'a> {
-// 		fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-// 			Some(self.cmp(other))
-// 		}
-// 	}
-// 	impl<'a> Ord for Node<'a> {
-// 		fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-// 			self.color_sets.len().cmp(&other.color_sets.len())
-// 		}
-// 	}
-// 	impl<'a> Hash for Node<'a> {
-// 		fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-// 			self.colors.hash(state);
-// 		}
-// 	}
-// 	impl<'a> PartialEq for Node<'a> {
-// 		fn eq(&self, other: &Self) -> bool {
-// 			self.colors == other.colors
-// 		}
-// 	}
-
-
-// 	fn build_graph<'a>(color_context: &Color_context, color_sets: &'a BTreeSet<Indexed_color_set>) -> BinaryHeap<Node<'a>> {
-// 		let colors = &color_context.index_to_color;
-// 		let mut graph = BinaryHeap::<Node>::new();
-// 		for a in 0..(colors.len() as u8) {
-// 			for b in 0..a {
-// 				let filtered_color_sets = color_sets.iter()
-// 					.filter(|set|set.get_bit(a) && set.get_bit(b));
-// 				graph.push(Node{
-// 					colors:[a, b],// b will always be less than a
-// 					color_sets: filtered_color_sets.collect()
-// 				});
-// 			}
-// 		}
-// 		graph
-// 	}
-// }
-
-
-
-pub fn save_color_list_image<'a, Iter>(path: &Path, colors: Iter) -> ()
-where Iter: ExactSizeIterator<Item = &'a Color24> {
-	println!("{}", path.display());
-	use image::RgbaImage;
-	let size = (colors.len() as f32).sqrt().ceil() as u32;
-	let mut output_image = RgbaImage::new(size,size);
-	output_image.fill(0);
-
-	for (pixel, color) in output_image.pixels_mut().zip(colors) {
-		*pixel = (*color).into();
-	};
-	output_image.save_with_format(path, ImageFormat::Png).unwrap();
-}
 
 
 impl Into<Rgba<u8>> for Color24 {
@@ -717,31 +693,9 @@ impl Averaged_colors {
 	}
 }
 
-/// replace this with a function that grows clusters
-pub fn _organize_palette(colors: Vec<Color24>) -> Vec<Color24> {
-	let mut color_pool: HashSet<_> = colors.iter().map(|c|Averaged_colors::new(*c)).collect();
-	loop {
-		let Running_best_by_score{score, best} = get_best_color_pair_by_distance(&color_pool);
-		if (-score) > 32 {break;}
-		for pair in &best {
-			color_pool.remove(&pair[0]);
-			color_pool.remove(&pair[1]);
-			color_pool.insert(pair[0].get_average(&pair[1]));
-		}
-	}
-	
-	let mut final_colors = Vec::new();
 
-	for cluster in color_pool {
-		let mut cluster_vec: Vec<_> = cluster.members;
-		cluster_vec.sort_by(cmp_oklab_l);
-		final_colors.push(cluster_vec);
-	}
-	final_colors.sort();
-	return final_colors.into_iter().flatten().collect();
-}
 
-fn get_best_color_pair_by_distance(colors: &HashSet<Averaged_colors>) -> Running_best_by_score<[Averaged_colors; 2]>  {
+fn get_best_color_pair_by_distance(colors: &std::collections::HashSet<Averaged_colors>) -> Running_best_by_score<[Averaged_colors; 2]>  {
 	let mut best = Running_best_by_score::new();
 	for (a, color_a) in (&colors).into_iter().enumerate() {
 		for (b, color_b) in (&colors).into_iter().enumerate() {
@@ -831,16 +785,104 @@ where T: IntoIterator<Item=u8> {
 }
 
 
-
-pub fn save_palette_image(path: &Path, colors: &Vec<Vec<Color24>>) -> () {
+ 
+pub fn write_palette_image(path: &Path, palettes: &Vec<Vec<Option<Color24>>>) -> ()
+{
+	let colors = palettes.into_iter();
 	let mut output_image = RgbaImage::new(16,colors.len() as u32);
-	output_image.fill(0);
+	output_image.fill(0); 
 
-	for (y, color_set) in colors.clone().iter_mut().enumerate() {
-		for (x, color) in color_set.iter().enumerate() {
-			
-			output_image.put_pixel(x as u32, y as u32, (*color).into());
+	for (y, color_set) in colors.enumerate() {
+		for (x, color) in color_set.into_iter().enumerate() {
+			if let Some(color) = color {
+				let color: Color24 = color.clone();
+				output_image.put_pixel(x as u32, y as u32, color.into());
+			}
 		}
 	};
 	output_image.save_with_format(path, ImageFormat::Png).unwrap();
 } 
+
+pub fn write_jasc_palettes(path: &Path, palettes: &Vec<Vec<Option<Color24>>>) -> ()
+{
+	for (i, palette) in palettes.into_iter().enumerate() {
+		// if palette.len() > 16 {return Err(())}
+		let mut string = format!("JASC-PAL\n0100\n16\n-\n");
+		for c in 1..16 {
+			if let Some(Some(color)) = palette.get(c) {
+				string.push_str(&format!("{} {} {}\n", color.rgb[0], color.rgb[1], color.rgb[2]));
+			}
+			else {
+				string.push_str(&format!("-\n"));
+			}
+		}
+		write(path.join(format!("{i:02}.pal")), string).unwrap();
+	}
+}
+
+
+pub fn load_palette_overrides(color_context: &mut Color_context) -> Palette_list {
+	let pal_image_path = PathBuf::from("override_palette_path");
+	let pal_jasc_path = PathBuf::from("override_palette_path");
+
+	let mut colors_sparse = vec![];
+
+	if exists(&pal_image_path).unwrap() {
+		colors_sparse = read_palette_image(&pal_image_path);		
+
+	} else if exists(&pal_jasc_path).unwrap() {
+
+		// see if jasc palette overrides exist
+		colors_sparse = crate::decompilation::load_jasc_palette_folder(&pal_jasc_path);
+
+		// let c = colors_sparse.iter().map(|a|a.clone().unwrap_or(vec![])).collect();
+
+		write_palette_image(&pal_jasc_path.join("colors.png"), &colors_sparse);
+	}
+	let mut result = Vec::new();
+
+	for (i, palette) in colors_sparse.into_iter().enumerate() {
+		if palette.len() > 0 {
+			let mut color_set = Indexed_color_set::new();
+			let mut color_map = BTreeMap::new();
+			for (c, color) in palette.into_iter().enumerate() {
+				if let Some(color) = color {
+					let color_index = color_context.insert_get_index(color);
+					color_set.set_bit(color_index);
+					color_map.insert(color_index, Position_in_palette::Absolute(c as u8));
+				}
+			}
+			result.push((color_set, Palette_info(color_map, Some(Palette_index(i as u8)))));
+		}
+	}
+	Palette_list(result)
+}
+
+
+trait Color_row {
+	fn get_color_row(&self) -> impl Iterator<Item = Option<Color24>>;
+}
+
+impl Color_row for Vec<Color24> {
+	fn get_color_row(&self) -> impl Iterator<Item = Option<Color24>> {
+		self.iter().map(|a|Some(a.clone()))
+	}
+}
+
+impl Color_row for Vec<Option<Color24>> {
+	fn get_color_row(&self) -> impl Iterator<Item = Option<Color24>> {
+		self.iter().cloned()
+	}
+}
+
+impl Color_row for Option<Vec<Color24>> {
+	fn get_color_row(&self) -> impl Iterator<Item = Option<Color24>> {
+		self.iter().cloned().flatten().map(Some)
+	}
+}
+
+impl Color_row for Option<Vec<Option<Color24>>> {
+	fn get_color_row(&self) -> impl Iterator<Item = Option<Color24>> {
+		self.iter().cloned().flatten()
+	}
+}

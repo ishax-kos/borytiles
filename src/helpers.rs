@@ -1,6 +1,6 @@
 pub use std::{
 	collections::{ 
-		HashSet, BTreeMap
+		BTreeSet, BTreeMap
 	}, 
 	path::{PathBuf, Path}, 
 	str::FromStr
@@ -68,4 +68,28 @@ pub fn ascertain_directory_exists(path: &Path) -> std::io::Result<()> {
 		// return Err(std::io::Error::new(std::io::ErrorKind::Other, 0))
 	}
 	return Ok(());
+}
+
+
+
+
+pub fn growable_vec_insert<T: Clone>(vector: &mut Vec<T>, position: usize, item: impl FnOnce() -> T, default: impl FnOnce() -> T) {
+	
+	if position >= vector.len() {
+		vector.resize(position+1, default());
+	}
+	vector[position] = item();
+}
+
+
+
+#[derive(Debug)]
+pub struct Err_invalid_image {
+	msg: String
+}
+
+impl Err_invalid_image {
+	pub fn new(msg: String) -> Self {
+		Err_invalid_image{msg}
+	}
 }

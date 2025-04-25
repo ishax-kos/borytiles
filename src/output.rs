@@ -13,6 +13,8 @@ struct Metatile_attribute {
 	layers: Layer_configuration,
 }
 
+
+
 // Bit   Expl.
 // 0-9   Tile Number     (0-1023) (a bit less in 256 color mode, because
 // 												 there'd be otherwise no room for the bg map)
