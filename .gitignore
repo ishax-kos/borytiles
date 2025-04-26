@@ -1,6 +1,7 @@
 /target
 /samples
-/.vscode
+/.*
 /bin
 *.png
+*.bin
 Cargo.lock

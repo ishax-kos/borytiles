@@ -83,13 +83,25 @@ pub fn growable_vec_insert<T: Clone>(vector: &mut Vec<T>, position: usize, item:
 
 
 
-#[derive(Debug)]
-pub struct Err_invalid_image {
-	msg: String
-}
+// #[derive(Debug)]
+// pub enum Err_invalid_image {
 
-impl Err_invalid_image {
-	pub fn new(msg: String) -> Self {
-		Err_invalid_image{msg}
-	}
-}
+
+// pub enum Load_png_indexed_problem {
+//   not_indexed,
+//   io_error(std::io::Error),
+//   other(String),
+// }
+pub use anyhow::{anyhow, Result};
+
+// #[derive(Debug)]
+// pub enum Tiles_error {
+// 	file_unreadable,
+// 	metatile_image_bad_width,
+// 	metatile_image_bad_height,
+// 	image_bad_format,
+// 	jasc_bad_header,
+// 	jasc_row_count_mismatch
+// }
+
+// pub type Tiles_result<T = ()> = Result<T, anyhow::Error<>>;

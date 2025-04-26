@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyhow = "1.0.98"
 clap = { version = "4.5.34", features = ["derive"] }
 image = "0.25.5"
 oklab = "1.1.2"
 png = "0.17.16"
 regex = "1.11.1"
-toml = "0.8.20"

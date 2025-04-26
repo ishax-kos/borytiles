@@ -1,4 +1,4 @@
-use std::{fs::{exists, read_dir, read_to_string}, path::{Path, PathBuf}};
+use std::{fs::{read_dir, read_to_string}, path::{Path, PathBuf}};
 use image::GrayImage;
 use regex::Regex;
 use crate::{helpers::*, palette::{self, Color24}, tileset};
@@ -113,40 +113,18 @@ pub fn load_metatileset(path: &Path) -> std::io::Result<Vec<Metatile_layer>> {
 }
 
 
-// pub struct Metatileset {
-//   pub(crate) height: u32,
-//   pub(crate) metatile_layers: Vec<Metatile_layer>
-// }
-
-
-// impl Metatileset {
-//   pub fn new(metatile_layers: Vec<Metatile_layer>, height: u32) -> Self {
-//     assert_eq!(metatile_layers.len() % height as usize, 0);
-//     Metatileset{metatile_layers, height}
-//   }
-
-//   pub fn from_path(path: &Path, height: u32) -> Self {
-//     Self::new(load_metatileset(path).unwrap(), height)
-//   }
-// }
-
-
-pub enum Load_png_indexed_problem {
-  not_indexed,
-  io_error(std::io::Error),
-  other(String),
-}
-
-
-pub fn load_png_indexed(path: &Path) -> Result<GrayImage, Load_png_indexed_problem> {
-  let decoder = png::Decoder::new(std::fs::File::open(path).unwrap());
-  let mut reader = decoder.read_info().unwrap();
-  let mut buf = vec![0; reader.output_buffer_size()];
+pub fn load_png_indexed(path: &Path) -> Result<Option<GrayImage>> {
+  let decoder = png::Decoder::new(std::fs::File::open(path)?);
+  let mut reader = decoder.read_info()?;
 	match reader.info().color_type {
 		png::ColorType::Indexed | png::ColorType::Grayscale => {},
-		_ => {return Err(Load_png_indexed_problem::not_indexed);}
+		_ => {
+			// return Err(anyhow!("PNG is not indexed or in grayscale"));
+			return Ok(None);
+		}
 	} 
-  let info = reader.next_frame(&mut buf).unwrap();
+  let mut buf = vec![0; reader.output_buffer_size()];
+  let info = reader.next_frame(&mut buf)?;
   let bytes = &buf[..info.buffer_size()];
   let info = reader.info();
   let pixels : Vec<u8> = match info.bit_depth {
@@ -165,51 +143,46 @@ pub fn load_png_indexed(path: &Path) -> Result<GrayImage, Load_png_indexed_probl
       png::BitDepth::Sixteen => panic!(),
   };
   
-  Ok((GrayImage::from_raw(info.width,info.height,pixels)).unwrap())
+  Ok(Some(GrayImage::from_raw(info.width,info.height,pixels).unwrap()))
 }
 
 
 pub fn load_tileset(path: &Path) -> Vec<[[u8; 8]; 8]> {
   let path = path.join("tiles.png");
-  match load_png_indexed(&path) {
-    Ok(image) => {
-      let expect_count = image.width() * image.height() / 64;
-      let tile_x_count = image.width() / 8;
-      let mut result_vec = Vec::new();
-      for i in 0..expect_count {
-        let base_x = (i % tile_x_count) * 8;
-        let base_y = (i / tile_x_count) * 8;
-        let mut tile = [[0u8; 8]; 8];
-        // Each entire tile must fit within a 16 value range.
-        let mut range = Option::<u8>::None;
-        for tile_pixel in 0..64u32 {
-          let x = tile_pixel % 8;
-          let y = tile_pixel / 8;
-          let index = image.get_pixel(base_x+x, base_y+y).0[0];
-          if let Some(range) = range {
-            if index / palette::palette_size_limit != range
-            {return load_tileset_not_indexed(&path);}
-          }
-          else {
-            range = Some(index / palette::palette_size_limit);
-          }
-          tile[y as usize][x as usize] = index % palette::palette_size_limit;
-        }
-        result_vec.push(tile);
-      }
-      return result_vec;
-    }
-    Err(err) => match err {
-      Load_png_indexed_problem::not_indexed => {
-        return load_tileset_not_indexed(&path);
-      },
-      Load_png_indexed_problem::io_error(err) => panic!("{err:?}"),
-      Load_png_indexed_problem::other(string) => panic!("{string}"),
-    }
-  }
+  if let Some(image) = load_png_indexed(&path).unwrap() {
+		let expect_count = image.width() * image.height() / 64;
+		let tile_x_count = image.width() / 8;
+		let mut result_vec = Vec::new();
+		for i in 0..expect_count {
+			let base_x = (i % tile_x_count) * 8;
+			let base_y = (i / tile_x_count) * 8;
+			let mut tile = [[0u8; 8]; 8];
+			// Each entire tile must fit within a 16 value range.
+			let mut range = Option::<u8>::None;
+			for tile_pixel in 0..64u32 {
+				let x = tile_pixel % 8;
+				let y = tile_pixel / 8;
+				let index = image.get_pixel(base_x+x, base_y+y).0[0];
+				if let Some(range) = range {
+					if index / palette::palette_size_limit != range
+					{return load_tileset_not_indexed(&path);}
+				}
+				else {
+					range = Some(index / palette::palette_size_limit);
+				}
+				tile[y as usize][x as usize] = index % palette::palette_size_limit;
+			}
+			result_vec.push(tile);
+		}
+		return result_vec;
+	}
+  else {
+		return load_tileset_not_indexed(&path);
+	}
 }
 
 fn load_tileset_not_indexed(path: &Path) -> Vec<[[u8; 8]; 8]> {
+	let _ = path;
   todo!("Determine indices from luminosity");
 }
 
@@ -244,13 +217,13 @@ pub fn load_jasc_palette_folder(path: &Path) -> Vec<Vec<Option<Color24>>> {
   palettes
 }
 
-pub fn read_jasc_palette<'a>(path: &Path) -> Result<Vec<Option<Color24>>, String> {
+pub fn read_jasc_palette<'a>(path: &Path) -> Result<Vec<Option<Color24>>> {
   let text = read_to_string(path).unwrap();
   let mut lines = text.lines();
   if lines.next() == Some("JASC-PAL") && lines.next() == Some("0100") {
     let color_count = usize::from_str_radix(lines.next().unwrap(), 10).unwrap();
     let mut colors = Vec::with_capacity(color_count);
-    for (i, line) in lines.enumerate() {
+    for line in lines {
       let mut color = [0u8;3];
 			let line = line.trim();
 			if line.trim() == "-" {
@@ -264,16 +237,18 @@ pub fn read_jasc_palette<'a>(path: &Path) -> Result<Vec<Option<Color24>>, String
 			}
     }
     if colors.len() != color_count {
+			// return Err(Tiles_error::jasc_row_count_mismatch)
 			let file = path.file_name().unwrap().to_str().unwrap();
 			let color_rows = colors.len();
-			return Err(format!(
+			return Err(anyhow!(
 				"palette file {file} of size {color_count} does not match number of color rows {color_rows}"
 			))
 		}
     return Ok(colors);
   }
   else {
-    return Err(format!("missing JASC header on {}", path.display()))
+		// return Err(Tiles_error::jasc_bad_header)
+    return Err(anyhow!("missing JASC header on {}", path.display()))
   }
 }
 

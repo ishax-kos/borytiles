@@ -9,7 +9,6 @@ use crate::palette::{
 	Color_context, 
 	Color_index, 
 	Color_sequence, 
-	Gba_color, 
 	Indexed_color_set, 
 	Palette_index, 
 	Palette_info, 
@@ -17,14 +16,14 @@ use crate::palette::{
 };
 
 use crate::helpers::*;
-use crate::tileset::{Shape, Shape_indexable_tile, Tile_instance, Tile_mask};
+use crate::tileset::{Shape, Shape_indexable_tile, Tile_4bpp, Tile_instance, Tile_mask};
 use core::panic;
 use std::fs;
 
-use std::{collections::BTreeSet, fmt::Debug};
+use std::collections::BTreeSet;
 
 
-pub fn compile_primary(tileset_path: &Path, layer_names: &[&str]) -> Result<(),()> {
+pub fn compile_primary(tileset_path: &Path, layer_names: &[&str]) -> Result<()> {
 	let images: Vec<RgbaImage> = layer_names.into_iter()
 		.map(|name| open_metatiles_image(&tileset_path.join(name)))
 		.collect();
@@ -44,12 +43,12 @@ pub fn compile_primary(tileset_path: &Path, layer_names: &[&str]) -> Result<(),(
 	let colors = crate::palette::filter_subsets(&colors);
 	let colors = crate::palette::condense_palettes_by_overlap(colors);
 	
-	let palettes = assign_palettes(&tiles, colors, overrides);
+	let palettes = assign_palettes(tiles, colors, overrides);
 
 	let output_path = tileset_path;
 
-	save_metatiles(&output_path, &tiles, metatile_maps, &palettes);
-	save_tile_image(&output_path, &tiles, &palettes);
+	let tiles = save_metatiles(&output_path, metatile_maps, &palettes);
+	save_tile_image(&output_path, &tiles);
 	save_palettes(&output_path, palettes, color_context);
 
 	Ok(())
@@ -65,7 +64,9 @@ fn save_palettes(
 		if let Some(index) = index {
 			Some(color_context.get_color(index))
 		}
-		else {None}
+		else {
+			Some(palette::porytiles_magenta)
+		}
 	
 	}).collect() ).collect();
 	let jasc_path = path.join(   "palettes");
@@ -77,38 +78,53 @@ fn save_palettes(
 
 fn save_metatiles(
 	path: &Path,
-	tiles: &BTreeSet<Shape_indexable_tile>, 
+	// tiles: &BTreeSet<Shape_indexable_tile>, 
 	metatile_maps: Vec<Vec<Tile_instance>>, 
 	palettes: &Vec<(Indexed_color_set, [Option<Color_index>; 16])>
-) {
-	let baked_metatiles = construct_metatile_buffer(metatile_maps, tiles, palettes);
+) -> Vec<Tile_4bpp> {
+	let (baked_metatiles, tiles) = construct_metatile_buffer(metatile_maps, palettes);
 	fs::write(path.join("metatiles.bin"), baked_metatiles.as_bytes()).unwrap();
+	tiles
 }
 
 
 fn construct_metatile_buffer(
 	metatile_maps: Vec<Vec<Tile_instance>>, 
-	tiles: &BTreeSet<Shape_indexable_tile>, 
+	// tiles: &BTreeSet<Shape_indexable_tile>, 
 	palettes: &Vec<(Indexed_color_set, [Option<Color_index>; 16])>,
-) -> Vec<u16>  {
+) -> (Vec<u16>, Vec<Tile_4bpp>)  {
 	let metatiles = interleave_metatiles(metatile_maps);
 
-	let tile_map = tiles.iter().cloned().zip(0u16..).collect::<BTreeMap<_,_>>();
-
-	metatiles.map(|tile_instance| {
-		let tile_id = tile_map[&tile_instance.shape];
-		let color_set: Indexed_color_set = tile_instance.shape.colors.values().cloned().collect();
-		let palette = palettes.iter().position(|p|p.0.is_superset_of(&color_set)).unwrap() as u8;
+	// let tile_map = tiles.iter().cloned().zip(0u16..).collect::<BTreeMap<_,_>>();
+	let mut tile_map = std::collections::HashMap::<Tile_4bpp, u16>::new();
+	let mut tile_list = Vec::<Tile_4bpp>::new();
+	{
+		let tile = Tile_4bpp{rows: [0;8]};
+		tile_list.push(tile);
+		tile_map.insert(tile, 0);
+	}
+ 
+	(metatiles.map(|tile_instance| {
+		let tile_shape = &tile_instance.shape;
+		let (tile, palette_index) = Tile_4bpp::from_shape_palette(tile_shape, palettes);
+		let tile_id: u16;
+		if let Some(&id) = tile_map.get(&tile) {
+			tile_id = id;
+		}
+		else {
+			tile_id = tile_list.len() as u16;
+			tile_list.push(tile);
+			tile_map.insert(tile, tile_id);
+		}
 		
-		crate::tileset::construct_gba_tile(tile_id, tile_instance.flip_h, tile_instance.flip_v, palette)
-	}).collect()
+		crate::tileset::construct_gba_tile(tile_id, tile_instance.flip_h, tile_instance.flip_v, palette_index.0)
+	}).collect(), tile_list)
 }
 
 
 fn save_tile_image(
 	path: &Path,
-	tiles: &BTreeSet<Shape_indexable_tile>, 
-	palettes: &Vec<(Indexed_color_set, [Option<Color_index>; 16])>
+	tiles: &Vec<Tile_4bpp>,
 ) {
 	let tile_count = tiles.len();
 	const tiles_wide: usize = 16;
@@ -116,40 +132,33 @@ fn save_tile_image(
 	let tiles_high: usize = tile_count.div_ceil(16);
 	let pixels_high: usize = tiles_high * 8;
 
-
-	let mut data = vec![[0u8; pixels_wide]; pixels_high];
+	let mut data = vec![0u8; pixels_wide/2 * pixels_high];
 	// assert_eq!(pixels_wide*pixels_high, tiles.len()*64);
 	for (tile_index, tile) in tiles.into_iter().enumerate() {
-		let base_x = (tile_index % tiles_wide) * 8;
-		let base_y = (tile_index / tiles_wide) * 8;
+		let tile_x = tile_index % tiles_wide * 8;
+		let tile_y = tile_index / tiles_wide * 8;
 
-		let color_set: Indexed_color_set = tile.colors.values().cloned().collect();
-		let palette = palettes.iter().position(|p|p.0.is_superset_of(&color_set)).unwrap();
-		let palette = &palettes[palette].1;
-		for (mask, color_index) in tile.colors.iter() {
-			let mut value = 1u8;
-			for color in palette {
-				if let Some(color) = color {
-					if *color == *color_index {break}
-				}
-				value += 1;
-			}
-			for y in 0..8 {
-				for x in 0..8 {
-					if (mask.rows[y] >> x & 1) == 1 {
-						data[base_y+y][base_x+x] |= value;
-					}
-				}
+		
+		for y in 0..8 {
+			let mut row: u32 = tile.rows[y];
+			for x in 0..8 {
+				let bits = (row & 0b1111) as u8;
+				
+				let x_byte = tile_x + x;
+				let y_byte = tile_y + y;
+
+
+				let pixel_index = x_byte + (y_byte * 128);
+				let shift = ((x+1) % 2) * 4;
+				data[pixel_index/2] |= bits << shift;
+				row >>= 4;
+				
 			}
 		}
+
 	}
-	let data: Vec<u8> = data.iter().flat_map(
-		|row|{
-			// row.into_iter().cloned()
-			row.chunks(2).map(|a|(a[0] << 4) | (a[1] & 0b1111))
-		}
-	).collect();
 
+	
 
 	let file = fs::File::create(path.join("tiles.png")).unwrap();
 	let ref mut writer = std::io::BufWriter::new(file);
@@ -161,21 +170,16 @@ fn save_tile_image(
 }
 
 
-fn validate_metatiles_image(image: &ImageBuffer<Rgba<u8>, Vec<u8>>) -> Result<(), Vec<Err_invalid_image>> {
-	let mut errors = vec![];
+fn validate_metatiles_image(image: &ImageBuffer<Rgba<u8>, Vec<u8>>) -> Result<()> {
+	// let mut errors = vec![];
 	if image.width() % 16 != 0 {
-		errors.push(Err_invalid_image::new("Width is not a multiple of 16.".into()));
+		return Err(anyhow!("Metatile layer image width is not a multiple of 16!"));
 	}
 	if image.height() % 16 != 0 {
-		errors.push(Err_invalid_image::new("Height is not a multiple of 16.".into()));
+		return Err(anyhow!("Metatile layer image height is not a multiple of 16!"));
 	}
 
-	if errors.is_empty() {
-		return Ok(());
-	}
-	else {
-		return Err(errors);
-	}
+	return Ok(());
 }
 
 
@@ -298,39 +302,54 @@ impl Iterator for Metatile_interleaver
 
 
 pub fn assign_palettes(
-  tiles: &BTreeSet<Shape_indexable_tile>, 
+  tiles: BTreeSet<Shape_indexable_tile>, 
   basic_palettes: BTreeSet<Indexed_color_set>,
   palette_list: Palette_list,
 ) -> Vec<(Indexed_color_set, [Option<Color_index>; 16])> {
   let mut palette_list = palette_list;
+
+
   for p in basic_palettes {
     palette_list.insert_ics(p);
   }
+
+
+	for (a, Palette_info(b, _)) in palette_list.0.iter() {
+		let b_set = b.keys().cloned().collect();
+		assert_eq!(*a, b_set);
+	}
+
+	
   account_for_palette_swaps(tiles, &mut palette_list);
 	let palette_count = palette_list.0.len();
 
 	// Get rid of undetermined positions
 	for (_, Palette_info(color_position_map, _)) in palette_list.0.iter_mut() {
-			let mut used_pos = std::collections::HashSet::new();
-			let mut i = 1;
-			for (_, position) in color_position_map.iter_mut() {
-				use palette::Position_in_palette::*;
-				match *position {
-					Undetermined => {},
-					Absolute(p) => {used_pos.insert(p);},
-					Indirect(_, _) => {},
-				}
+		let mut used_pos = std::collections::HashSet::new();
+		let mut i = 1;
+		for (_, position) in color_position_map.iter_mut() {
+			use palette::Position_in_palette::*;
+			match *position {
+				Undetermined => {},
+				Absolute(p) => {used_pos.insert(p);},
+				Indirect(_, _) => {},
 			}
-			for (_, position) in color_position_map.iter_mut() {
-				use palette::Position_in_palette::*;
-				while used_pos.contains(&i) {i += 1}
-				match *position {
-					Undetermined => {*position = Absolute(i); i += 1;},
-					Absolute(_) => {},
-					Indirect(_, _) => {},
-				}
+		}
+		for (_, position) in color_position_map.iter_mut() {
+			use palette::Position_in_palette::*;
+			while used_pos.contains(&i) {i += 1}
+			match *position {
+				Undetermined => {*position = Absolute(i); i += 1;},
+				Absolute(_) => {},
+				Indirect(_, _) => {},
 			}
+		}
 	};
+	
+	for (a, Palette_info(b, _)) in palette_list.0.iter() {
+		let b_set = b.keys().cloned().collect();
+		assert_eq!(*a, b_set);
+	}
 
 	// Get rid of indirect positions
 	let mut palette_list_2 = Vec::new();
@@ -366,6 +385,7 @@ pub fn assign_palettes(
 		palette_list_2.push((*color_set, palette, *palette_position));
 	}
 
+
 	drop(palette_list);
 
 	// Determine absolute palette positions
@@ -396,13 +416,20 @@ pub fn assign_palettes(
 			);
 		}
 	}
+	// palette_list_3
+
+
+	// for (a,b) in palette_list_3.iter() {
+	// 	let b_set = b.iter().cloned().collect();
+	// 	assert_eq!(*a, b_set);
+	// }
+
 	palette_list_3
 }
 
 
-
 fn account_for_palette_swaps(
-  tiles: &BTreeSet<Shape_indexable_tile>, 
+  tiles: BTreeSet<Shape_indexable_tile>, 
   palette_list: &mut Palette_list,
 ) -> () {
   

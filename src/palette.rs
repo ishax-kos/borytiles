@@ -1,7 +1,7 @@
 
 
 use crate::{bucket, decompilation::read_jasc_palette, helpers::*, unbind};
-use std::{collections::{BTreeMap, BTreeSet}, f32::consts::TAU, fs::{exists, write}, i32, ops::{Index, IndexMut}, path::{Iter, Path}, vec};
+use std::{collections::{BTreeMap, BTreeSet}, f32::consts::TAU, fmt::Debug, fs::{exists, write}, i32, ops::{Index, IndexMut}, path::{Display, Iter, Path}, vec};
 use clap::builder::styling::Color;
 use image::{ImageFormat, ImageReader, Rgb, Rgba, RgbaImage};
 use oklab::Oklab;
@@ -72,7 +72,6 @@ impl Color_context {
 		Indexed_color_set::from_iter(indices)
 	}
 
-
 	pub fn save_palette_image<'a, Iter>(&self, path: &Path, color_sets: Iter) -> ()
 	where Iter: Iterator<Item = &'a Indexed_color_set> {
 		let mut colors: Vec<_> = Vec::new();
@@ -82,13 +81,11 @@ impl Color_context {
 		};
 
 		write_palette_image(path, &colors);
-
 	}
-
 
 	pub fn get_true_color_palette(&self, color_set: &Indexed_color_set) -> Vec<Color24> {
 		
-		println!("as bit set: {}", color_set.len());
+		// println!("as bit set: {}", color_set.len());
 		let mut color32_list = Vec::new();
 		let mut i = 0;
 		for group in color_set.bits {
@@ -116,8 +113,6 @@ fn wrapped_distance(distance: f32, a: f32, b: f32) -> f32 {
 }
 
 
-// pub type Palette = [Color32; 16];
-
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Copy)]
 pub struct Color24 {
 	pub rgb: [u8; 3]
@@ -137,6 +132,8 @@ impl Color24 {
 		Some(Color24{rgb:[value[0], value[1], value[2]]})
 	}
 }
+
+pub const porytiles_magenta:Color24 = Color24{rgb:[248, 0, 248]};
 
 pub fn convert_optional_color(color: Option<Color24>) -> Rgba<u8> {
 	if let Some(color) = color {
@@ -293,14 +290,19 @@ impl Palette_list {
 			other.into_iter().map(|a|(a, Position_in_palette::Undetermined)).collect(),
 			None
 		);
+
+		let a = index.clone();
+		let b = info.0.keys().cloned().collect();
+		assert_eq!(a, b);
+
 		self.0.push((index, info));
-		
+
 	}
 }
 
 
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub struct Indexed_color_set {
 	pub bits: [u64;4]
 }
@@ -401,6 +403,17 @@ impl FromIterator<Color_index> for Indexed_color_set {
 		set
 	}
 }
+impl FromIterator<Option<Color_index>> for Indexed_color_set {
+	fn from_iter<T: IntoIterator<Item = Option<Color_index>>>(iter: T) -> Self {
+		let mut set = Indexed_color_set::new();
+		for index in iter {
+			if let Some(index) = index {
+				set.set_bit(index);
+			}
+		}
+		set
+	}
+}
 
 impl IntoIterator for Indexed_color_set {
 	type IntoIter = Indexed_color_set_iter;
@@ -428,13 +441,25 @@ impl Iterator for Indexed_color_set_iter {
 			for _ in b..64 {
 				let res = Color_index(self.index as u8);
 				self.index += 1;
+				let comp = (*group & 1) == 1;
 				*group >>= 1;
-				if (*group & 1) == 1 {
+				if comp {
 					return Some(res);
 				}
 			}
 		}
 		return None;
+	}
+}
+
+// impl std::fmt::Display for Indexed_color_set {
+// 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+// 		write!(f, "{:08X},{:08X},{:08X},{:08X}", self.bits[0], self.bits[1], self.bits[2], self.bits[3])
+// 	}
+// }
+impl std::fmt::Debug for Indexed_color_set {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:064b},{:064b},{:064b},{:064b}", self.bits[0], self.bits[1], self.bits[2], self.bits[3])
 	}
 }
 
@@ -772,19 +797,6 @@ impl From<Oklab> for Okhsl {
 	}
 }
 
-
-fn pythagorean_theorem<T>(a: T, b: T) -> f32 
-where T: IntoIterator<Item=f32> {
-	(a.into_iter().zip(b.into_iter()))
-		.fold(0.0, |accum, (a,b)| accum+((b-a)).powi(2) ).sqrt()
-}
-fn pythagorean_theorem_u8<T>(a: T, b: T) -> f32 
-where T: IntoIterator<Item=u8> {
-	(a.into_iter().zip(b.into_iter()))
-		.fold(0.0, |accum, (a,b)| accum+(b as f32 - a as f32).powi(2) ).sqrt()
-}
-
-
  
 pub fn write_palette_image(path: &Path, palettes: &Vec<Vec<Option<Color24>>>) -> ()
 {
@@ -807,8 +819,8 @@ pub fn write_jasc_palettes(path: &Path, palettes: &Vec<Vec<Option<Color24>>>) ->
 {
 	for (i, palette) in palettes.into_iter().enumerate() {
 		// if palette.len() > 16 {return Err(())}
-		let mut string = format!("JASC-PAL\n0100\n16\n-\n");
-		for c in 1..16 {
+		let mut string = format!("JASC-PAL\n0100\n16\n");
+		for c in 0..16 {
 			if let Some(Some(color)) = palette.get(c) {
 				string.push_str(&format!("{} {} {}\n", color.rgb[0], color.rgb[1], color.rgb[2]));
 			}
@@ -886,3 +898,4 @@ impl Color_row for Option<Vec<Option<Color24>>> {
 		self.iter().cloned().flatten()
 	}
 }
+

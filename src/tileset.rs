@@ -145,7 +145,38 @@ pub type Shape = BTreeSet<Tile_mask>;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub struct Tile_4bpp {
-  rows: [u16; 8]
+  pub rows: [u32; 8]
+}
+
+
+impl Tile_4bpp {
+	pub fn from_shape_palette(
+		tile_shape: &Shape_indexable_tile, 
+		palettes: &Vec<(Indexed_color_set, [Option<Color_index>; 16])>
+	) -> (Self, Palette_index) {
+		let mut rows_4bpp = [0u32; 8];
+
+		let color_set: Indexed_color_set = tile_shape.colors.values().cloned().collect();
+		let palette_index = palettes.iter().position(|p|p.0.is_superset_of(&color_set)).unwrap();
+		let palette = &palettes[palette_index].1;
+		let palette_mapping = palette.into_iter().zip(0..).collect::<std::collections::HashMap<_, _>>();
+
+		for (mask, color_index) in &tile_shape.colors {
+			let color_index = Some(*color_index);
+			let value = palette_mapping[&color_index];
+			assert!(value <= 0b1111);
+			for y in 0..8 {
+				let mut row = mask.rows[y];
+				for x in 0..8 {
+					if row & 1 == 1 {
+						rows_4bpp[y] |= value << (x * 4);
+					}
+					row >>= 1;
+				}
+			}
+		}
+		(Tile_4bpp { rows: rows_4bpp }, Palette_index(palette_index as u8))
+	}
 }
 
 
