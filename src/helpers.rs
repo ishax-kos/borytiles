@@ -1,3 +1,4 @@
+use std::{array, ops::Index, path::Iter};
 pub use std::{
 	collections::{ 
 		BTreeSet, BTreeMap
@@ -105,3 +106,32 @@ pub use anyhow::{anyhow, Result};
 // }
 
 // pub type Tiles_result<T = ()> = Result<T, anyhow::Error<>>;
+
+
+pub trait Array_type<T>: IntoIterator<IntoIter: Iterator<Item = T>> {
+	fn len(&self) -> usize;
+	fn array_index(&self, index: usize) -> &T;
+	// fn slice(&self) -> &[T];
+}
+
+
+impl<T, const size: usize> Array_type<T> for [T; size] {
+	fn len(&self) -> usize {size}
+
+	fn array_index(&self, index: usize) -> &T {
+		&self[index]
+	}
+
+	// fn slice(&self) -> &[T] {
+	// 	todo!()
+	// }
+}
+impl<T> Array_type<T> for Vec<T> {
+	fn len(&self) -> usize {
+		Vec::len(&self)
+	}
+
+	fn array_index(&self, index: usize) -> &T {
+		Vec::index(&self, index)
+	}
+}
