@@ -66,14 +66,12 @@ enum Decompile_tileset {
 		#[arg(long="root")]
 		project_root: Option<String>,
 		name: String,
-		layer_count: usize,
 		output_layer_names: String,
 	},
 	secondary{
 		#[arg(long="root")]
 		project_root: Option<String>,
 		name: String,
-		layer_count: usize,
 		output_layer_names: String,
 		
 		primary_name: String,
@@ -87,16 +85,16 @@ impl Decompile_tileset {
 			Decompile_tileset::primary {
 				project_root,
 				name, 
-				layer_count, 
 				output_layer_names 
 			} => {
 				let path = determine_project_root(project_root).unwrap()
 					.join(raw_primary_path)
 					.join(name);
-				let images = decompile_primary(&path, layer_count);
 				let output_layer_names = split_layer_names(&output_layer_names);
 				let output_path = path.join("decompiled_tileset");
+				let layer_count = output_layer_names.len();
 				ascertain_directory_exists(&output_path).unwrap();
+				let images = decompile_primary(&path, layer_count);
 				for i in 0..layer_count {
 					images[i].save_with_format(
 						output_path.join(output_layer_names[i]), 
@@ -106,7 +104,6 @@ impl Decompile_tileset {
 			Decompile_tileset::secondary { 
 				project_root,
 				name, 
-				layer_count, 
 				output_layer_names, 
 				primary_name 
 			} => todo!(),
