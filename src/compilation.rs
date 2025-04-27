@@ -1,37 +1,35 @@
 
 use image::*;
 use crate::palette::{
-	self, 
-	load_palette_overrides, 
-	write_palette_image, 
-	write_jasc_palettes, 
-	Color24, 
-	Color_context, 
-	Color_index, 
-	Color_sequence, 
-	Indexed_color_set, 
-	Palette_index, 
-	Palette_info, 
-	Palette_list
+	self, load_palette_overrides, porytiles_magenta, write_jasc_palettes, write_palette_image, Color24, Color_context, Color_index, Color_sequence, Indexed_color_set, Palette_index, Palette_info, Palette_list
 };
 
 use crate::helpers::*;
-use crate::tileset::{Shape, Shape_indexable_tile, Tile_4bpp, Tile_instance, Tile_mask};
+use crate::tileset::{Shape, Shape_indexable_tile, Tile_4bpp, Tile_instance, Tile_instance_intermediate, Tile_mask};
 use core::panic;
 use std::fs;
 
 use std::collections::BTreeSet;
 
 
+
 pub fn compile_primary(tileset_path: &Path, layer_names: &[&str]) -> Result<()> {
 	let images: Vec<RgbaImage> = layer_names.into_iter()
 		.map(|name| open_metatiles_image(&tileset_path.join(name)))
 		.collect();
+	let tileset = compile_tileset(images)?;
+
+	tileset.write(tileset_path)?;
+	Ok(())
+}
+
+
+pub fn compile_tileset(images: Vec<RgbaImage>) -> Result<Compiled_tileset> {
 
 	let mut color_context = Color_context::new();
 	let mut tiles = BTreeSet::new();
 	let mut colors = BTreeSet::new();
-	let mut metatile_maps = Vec::<Vec<Tile_instance>>::new();
+	let mut metatile_maps = Vec::<Vec<Tile_instance_intermediate>>::new();
 	for layer_image in images.iter() {
 		metatile_maps.push(color_context.process_metatile_image(&layer_image, &mut tiles, &mut colors));
 	}
@@ -43,56 +41,80 @@ pub fn compile_primary(tileset_path: &Path, layer_names: &[&str]) -> Result<()> 
 	let colors = crate::palette::filter_subsets(&colors);
 	let colors = crate::palette::condense_palettes_by_overlap(colors);
 	
-	let palettes = assign_palettes(tiles, colors, overrides);
+	let palettes_by_number = assign_palettes(tiles, colors, overrides);
 
-	let output_path = tileset_path;
+	let palettes = colorize_palettes(palettes_by_number.iter().map(|a|a.1), &color_context);
 
-	let tiles = save_metatiles(&output_path, metatile_maps, &palettes);
-	save_tile_image(&output_path, &tiles);
-	save_palettes(&output_path, palettes, color_context);
+	let (metatiles, tiles) = construct_metatile_buffer(metatile_maps, &palettes_by_number);
 
-	Ok(())
+	Ok(Compiled_tileset {
+		metatiles,
+		tiles,
+		palettes
+	})
+}
+
+
+pub fn colorize_palettes(
+	palettes: impl Iterator<Item = [Option<Color_index>; 16]>,
+	color_context: &Color_context
+) -> Vec<[Option<Color24>; 16]>
+{
+	palettes.map(|row| {
+		let mut out_row = [None;16];
+		for (color, color_index) in out_row.iter_mut().zip(row.iter()) {
+			if let Some(color_index) = color_index {
+				*color = Some(color_context.get_color(*color_index))
+			}
+		}
+		out_row
+	}).collect()
+}
+
+
+pub struct Compiled_tileset {
+	metatiles: Vec<Tile_instance>,
+	tiles: Vec<Tile_4bpp>,
+	palettes: Vec<[Option<Color24>; 16]>
+}
+
+
+impl Compiled_tileset {
+	pub fn write(&self, path: &Path) -> Result<()> {
+		save_tile_image(&path, &self.tiles);
+		save_palettes(&path, &self.palettes);
+		save_metatiles(&path, &self.metatiles);
+		Ok(())
+	}
 }
 
 
 fn save_palettes(
 	path: &Path,
-	palettes: Vec<(Indexed_color_set, [Option<Color_index>; 16])>, 
-	color_context: Color_context
+	palettes: &Vec<[Option<Color24>; 16]>,
 ) {
-	let true_color: Vec<Vec<Option<Color24>>> = palettes.into_iter().map(|row|row.1.into_iter().map(|index| {
-		if let Some(index) = index {
-			Some(color_context.get_color(index))
-		}
-		else {
-			Some(palette::porytiles_magenta)
-		}
 	
-	}).collect() ).collect();
-	let jasc_path = path.join(   "palettes");
+	let jasc_path = path.join("palettes");
 	ascertain_directory_exists(&jasc_path).unwrap();
-	write_jasc_palettes(&jasc_path, &true_color);
-	write_palette_image(&path.join("palette.png"), &true_color);
+	write_jasc_palettes(&jasc_path, palettes, Some(porytiles_magenta));
+	write_palette_image(&path.join("palette.png"), palettes);
 }
 
 
 fn save_metatiles(
 	path: &Path,
-	// tiles: &BTreeSet<Shape_indexable_tile>, 
-	metatile_maps: Vec<Vec<Tile_instance>>, 
-	palettes: &Vec<(Indexed_color_set, [Option<Color_index>; 16])>
-) -> Vec<Tile_4bpp> {
-	let (baked_metatiles, tiles) = construct_metatile_buffer(metatile_maps, palettes);
-	fs::write(path.join("metatiles.bin"), baked_metatiles.as_bytes()).unwrap();
-	tiles
+	baked_metatiles: &Vec<Tile_instance>,
+) {
+	let hardware_mt: Vec<_> = baked_metatiles.iter().map(Tile_instance::for_hardware).collect();
+	fs::write(path.join("metatiles.bin"), hardware_mt.as_bytes()).unwrap();
 }
 
 
 fn construct_metatile_buffer(
-	metatile_maps: Vec<Vec<Tile_instance>>, 
+	metatile_maps: Vec<Vec<Tile_instance_intermediate>>, 
 	// tiles: &BTreeSet<Shape_indexable_tile>, 
 	palettes: &Vec<(Indexed_color_set, [Option<Color_index>; 16])>,
-) -> (Vec<u16>, Vec<Tile_4bpp>)  {
+) -> (Vec<Tile_instance>, Vec<Tile_4bpp>)  {
 	let metatiles = interleave_metatiles(metatile_maps);
 
 	// let tile_map = tiles.iter().cloned().zip(0u16..).collect::<BTreeMap<_,_>>();
@@ -117,7 +139,7 @@ fn construct_metatile_buffer(
 			tile_map.insert(tile, tile_id);
 		}
 		
-		crate::tileset::construct_gba_tile(tile_id, tile_instance.flip_h, tile_instance.flip_v, palette_index.0)
+		Tile_instance::new(tile_id, tile_instance.flip_h, tile_instance.flip_v, palette_index.0)
 	}).collect(), tile_list)
 }
 
@@ -211,7 +233,7 @@ impl Color_context {
 		image: &RgbaImage, 
 		tile_result: &mut BTreeSet<crate::tileset::Shape_indexable_tile>, 
 		color_result: &mut BTreeSet<Indexed_color_set>
-	) -> Vec<Tile_instance> {
+	) -> Vec<Tile_instance_intermediate> {
 		let width = image.width() as usize;
 		assert!(width % 16 == 0);
 		let height = image.height() as usize;
@@ -220,7 +242,7 @@ impl Color_context {
 		let metatile_y_count = height / 16;
 		let expect_count: usize = metatile_x_count * metatile_y_count;
 		
-		let mut layer_mapping = Vec::<Tile_instance>::new();
+		let mut layer_mapping = Vec::<Tile_instance_intermediate>::new();
 
 		for metatile_index in 0..expect_count {
 			let mt_x: usize = (metatile_index % metatile_x_count) * 16;
@@ -267,31 +289,31 @@ impl Color_context {
 }
 
 
-fn interleave_metatiles(metatile_maps: Vec<Vec<Tile_instance>>) -> Metatile_interleaver {
+fn interleave_metatiles(metatile_maps: Vec<Vec<Tile_instance_intermediate>>) -> Metatile_interleaver {
 	Metatile_interleaver{metatiles:metatile_maps, index:0}
 }
 
 
 struct Metatile_interleaver
 {
-	metatiles: Vec<Vec<Tile_instance>>,
+	metatiles: Vec<Vec<Tile_instance_intermediate>>,
 	index: usize
 }
 
 
 impl Iterator for Metatile_interleaver
 {
-	type Item = Tile_instance;
+	type Item = Tile_instance_intermediate;
 
 	fn next(&mut self) -> Option<Self::Item> {
 		let index = self.index;
 		let  quad = index % 4;
 		let index = index / 4;
-		let layer = index % self.metatiles.len();
+		let layer_index = index % self.metatiles.len();
 		let index = index / self.metatiles.len();
 
-
-		let res = self.metatiles[layer].get(index*4 + quad);
+		let layer = &self.metatiles[layer_index];
+		let res = layer.get(index*4 + quad);
 		if res == None {
 			return None;
 		}

@@ -74,7 +74,7 @@ impl Color_context {
 
 	pub fn save_palette_image<'a, Iter>(&self, path: &Path, color_sets: Iter) -> ()
 	where Iter: Iterator<Item = &'a Indexed_color_set> {
-		let mut colors: Vec<_> = Vec::new();
+		let mut colors: Vec<Vec<Option<Color24>>> = Vec::new();
 
 		for color_set in color_sets {
 			colors.push(self.get_true_color_palette(color_set).into_iter().map(Some).collect());
@@ -798,15 +798,17 @@ impl From<Oklab> for Okhsl {
 }
 
  
-pub fn write_palette_image(path: &Path, palettes: &Vec<Vec<Option<Color24>>>) -> ()
-{
+pub fn write_palette_image(
+	path: &Path,
+	palettes: &Vec<impl Array_type<Option<Color24>>>, 
+) -> () {
 	let colors = palettes.into_iter();
 	let mut output_image = RgbaImage::new(16,colors.len() as u32);
 	output_image.fill(0); 
 
 	for (y, color_set) in colors.enumerate() {
-		for (x, color) in color_set.into_iter().enumerate() {
-			if let Some(color) = color {
+		for x in 0..color_set.len() {
+			if let Some(color) = color_set.array_index(x) {
 				let color: Color24 = color.clone();
 				output_image.put_pixel(x as u32, y as u32, color.into());
 			}
@@ -815,18 +817,30 @@ pub fn write_palette_image(path: &Path, palettes: &Vec<Vec<Option<Color24>>>) ->
 	output_image.save_with_format(path, ImageFormat::Png).unwrap();
 } 
 
-pub fn write_jasc_palettes(path: &Path, palettes: &Vec<Vec<Option<Color24>>>) -> ()
-{
-	for (i, palette) in palettes.into_iter().enumerate() {
-		// if palette.len() > 16 {return Err(())}
+pub fn write_jasc_palettes(
+	path: &Path, 
+	palettes: &Vec<impl Array_type<Option<Color24>>>, 
+	fallback: Option<Color24>
+) -> () {
+	let fallback = if let Some(color) = fallback {
+			&color.get_jasc_line()
+		}
+		else {"-"}
+	;
+	for i in 0..palettes.len() {
+		let palette = &palettes[i];
 		let mut string = format!("JASC-PAL\n0100\n16\n");
-		for c in 0..16 {
-			if let Some(Some(color)) = palette.get(c) {
-				string.push_str(&format!("{} {} {}\n", color.rgb[0], color.rgb[1], color.rgb[2]));
+		for c in 0..16usize {
+			if c < palette.len() {
+				if let Some(color) = palette.array_index(c) {
+					let line = color.get_jasc_line();
+					string.push_str(&line);
+					string.push_str("\n");
+					continue;
+				}
 			}
-			else {
-				string.push_str(&format!("-\n"));
-			}
+			string.push_str(fallback);
+			string.push_str("\n");
 		}
 		write(path.join(format!("{i:02}.pal")), string).unwrap();
 	}

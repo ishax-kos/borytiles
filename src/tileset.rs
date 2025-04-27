@@ -59,7 +59,7 @@ impl Shape_indexable_tile {
 // }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone)]
-pub struct Tile_instance {
+pub struct Tile_instance_intermediate {
   pub shape: Shape_indexable_tile,
   // pub palette: u8,
   pub flip_h: bool,
@@ -105,7 +105,7 @@ impl Shape_indexable_tile {
     }
   }
 
-  pub fn get_ideal_flip(&self) -> Tile_instance {
+  pub fn get_ideal_flip(&self) -> Tile_instance_intermediate {
     let (shape, flip_h, flip_v) = [
       (false, false),
       (false, true),
@@ -114,7 +114,7 @@ impl Shape_indexable_tile {
     ].into_iter()
       .map(|p|(self.get_flip(p.0, p.1), p.0, p.1))
       .min().unwrap();
-    Tile_instance { shape, flip_h, flip_v }
+    Tile_instance_intermediate { shape, flip_h, flip_v }
   }
 }
 
@@ -186,13 +186,30 @@ pub struct Full_color_tile {
 }
 
 
-pub fn construct_gba_tile(tile_id: u16, flip_h: bool, flip_v: bool, palette_id: u8) -> u16 {
-  let lo = (tile_id & 255) as u8;
-  let hi = 0u8
-    | (((tile_id & 0b11_00000000) >> 8) as u8)
-    | (flip_h as u8) << 2
-    | (flip_v as u8) << 3
-    | (palette_id & 0b1111) << 4
-  ;
-  unsafe {transmute([lo, hi])}
+pub struct Tile_instance {
+  pub tile_id: u16,
+  pub flip_h: bool,
+  pub flip_v: bool,
+  pub palette_id: u8,
+}
+
+impl Tile_instance {
+	pub fn new(tile_id: u16, flip_h: bool, flip_v: bool, palette_id: u8) -> Self {
+		Tile_instance{
+			tile_id,
+			flip_h,
+			flip_v,
+			palette_id
+		}
+	}
+	pub fn for_hardware(&self) -> u16 {
+		let lo = (self.tile_id & 255) as u8;
+		let hi = 0u8
+			| (((self.tile_id & 0b11_00000000) >> 8) as u8)
+			| (self.flip_h as u8) << 2
+			| (self.flip_v as u8) << 3
+			| (self.palette_id & 0b1111) << 4
+		;
+		unsafe {transmute([lo, hi])}
+	}
 }
