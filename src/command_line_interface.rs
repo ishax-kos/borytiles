@@ -91,15 +91,9 @@ impl Decompile_tileset {
 					.join(raw_primary_path)
 					.join(name);
 				let output_layer_names = split_layer_names(&output_layer_names);
-				let output_path = path.join("decompiled_tileset");
-				let layer_count = output_layer_names.len();
-				ascertain_directory_exists(&output_path).unwrap();
-				let images = decompile_primary(&path, layer_count);
-				for i in 0..layer_count {
-					images[i].save_with_format(
-						output_path.join(output_layer_names[i]), 
-						image::ImageFormat::Png).unwrap();
-				}
+				
+				decompile_primary(&path, &output_layer_names);
+
 			},
 			Decompile_tileset::secondary { 
 				project_root,

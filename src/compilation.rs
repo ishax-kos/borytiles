@@ -5,7 +5,7 @@ use crate::palette::{
 };
 
 use crate::helpers::*;
-use crate::tileset::{Shape, Shape_indexable_tile, Tile_4bpp, Tile_instance, Tile_instance_intermediate, Tile_mask};
+use crate::tileset::{Shape, Shape_indexable_tile, Tile, Tile_instance, Tile_instance_intermediate, Tile_mask};
 use core::panic;
 use std::fs;
 
@@ -17,16 +17,23 @@ pub fn compile_primary(tileset_path: &Path, layer_names: &[&str]) -> Result<()> 
 	let images: Vec<RgbaImage> = layer_names.into_iter()
 		.map(|name| open_metatiles_image(&tileset_path.join(name)))
 		.collect();
-	let tileset = compile_tileset(images)?;
+
+		
+	let overrides: Vec<[Option<Color24>; 16]> = load_palette_overrides(tileset_path);
+	let tileset = compile_tileset(images, overrides)?;
 
 	tileset.write(tileset_path)?;
 	Ok(())
 }
 
 
-pub fn compile_tileset(images: Vec<RgbaImage>) -> Result<Compiled_tileset> {
+pub fn compile_tileset(images: Vec<RgbaImage>, overrides: Vec<[Option<Color24>; 16]>) -> Result<Compiled_tileset> {
+
+	let layer_count = images.len();
 
 	let mut color_context = Color_context::new();
+
+
 	let mut tiles = BTreeSet::new();
 	let mut colors = BTreeSet::new();
 	let mut metatile_maps = Vec::<Vec<Tile_instance_intermediate>>::new();
@@ -36,18 +43,18 @@ pub fn compile_tileset(images: Vec<RgbaImage>) -> Result<Compiled_tileset> {
 	
 	color_context.save_palette_image(&PathBuf::from("./neat_little_pal.png"), colors.iter());
 
-	let overrides: Palette_list = load_palette_overrides(&mut color_context);
-
 	let colors = crate::palette::filter_subsets(&colors);
 	let colors = crate::palette::condense_palettes_by_overlap(colors);
 	
-	let palettes_by_number = assign_palettes(tiles, colors, overrides);
+	let palettes_by_number = Palette_list::from_overrides(overrides, &mut color_context);
+	let palettes_by_number = assign_palettes(tiles, colors, palettes_by_number);
 
 	let palettes = colorize_palettes(palettes_by_number.iter().map(|a|a.1), &color_context);
 
 	let (metatiles, tiles) = construct_metatile_buffer(metatile_maps, &palettes_by_number);
 
 	Ok(Compiled_tileset {
+		layer_count,
 		metatiles,
 		tiles,
 		palettes
@@ -73,9 +80,10 @@ pub fn colorize_palettes(
 
 
 pub struct Compiled_tileset {
-	metatiles: Vec<Tile_instance>,
-	tiles: Vec<Tile_4bpp>,
-	palettes: Vec<[Option<Color24>; 16]>
+	pub layer_count: usize,
+	pub metatiles: Vec<Tile_instance>,
+	pub tiles: Vec<Tile>,
+	pub palettes: Vec<[Option<Color24>; 16]>
 }
 
 
@@ -105,7 +113,7 @@ fn save_metatiles(
 	path: &Path,
 	baked_metatiles: &Vec<Tile_instance>,
 ) {
-	let hardware_mt: Vec<_> = baked_metatiles.iter().map(Tile_instance::for_hardware).collect();
+	let hardware_mt: Vec<_> = baked_metatiles.iter().map(|a|a.to_gba()).collect();
 	fs::write(path.join("metatiles.bin"), hardware_mt.as_bytes()).unwrap();
 }
 
@@ -114,21 +122,21 @@ fn construct_metatile_buffer(
 	metatile_maps: Vec<Vec<Tile_instance_intermediate>>, 
 	// tiles: &BTreeSet<Shape_indexable_tile>, 
 	palettes: &Vec<(Indexed_color_set, [Option<Color_index>; 16])>,
-) -> (Vec<Tile_instance>, Vec<Tile_4bpp>)  {
+) -> (Vec<Tile_instance>, Vec<Tile>)  {
 	let metatiles = interleave_metatiles(metatile_maps);
 
 	// let tile_map = tiles.iter().cloned().zip(0u16..).collect::<BTreeMap<_,_>>();
-	let mut tile_map = std::collections::HashMap::<Tile_4bpp, u16>::new();
-	let mut tile_list = Vec::<Tile_4bpp>::new();
+	let mut tile_map = std::collections::HashMap::<Tile, u16>::new();
+	let mut tile_list = Vec::<Tile>::new();
 	{
-		let tile = Tile_4bpp{rows: [0;8]};
+		let tile = Tile::new();
 		tile_list.push(tile);
 		tile_map.insert(tile, 0);
 	}
  
 	(metatiles.map(|tile_instance| {
 		let tile_shape = &tile_instance.shape;
-		let (tile, palette_index) = Tile_4bpp::from_shape_palette(tile_shape, palettes);
+		let (tile, palette_index) = Tile::from_shape_palette(tile_shape, palettes);
 		let tile_id: u16;
 		if let Some(&id) = tile_map.get(&tile) {
 			tile_id = id;
@@ -146,7 +154,7 @@ fn construct_metatile_buffer(
 
 fn save_tile_image(
 	path: &Path,
-	tiles: &Vec<Tile_4bpp>,
+	tiles: &Vec<Tile>,
 ) {
 	let tile_count = tiles.len();
 	const tiles_wide: usize = 16;
@@ -162,19 +170,16 @@ fn save_tile_image(
 
 		
 		for y in 0..8 {
-			let mut row: u32 = tile.rows[y];
+			// let mut row = tile.rows[y];
 			for x in 0..8 {
-				let bits = (row & 0b1111) as u8;
+				let value = tile.rows[y][x];
 				
 				let x_byte = tile_x + x;
 				let y_byte = tile_y + y;
 
-
 				let pixel_index = x_byte + (y_byte * 128);
 				let shift = ((x+1) % 2) * 4;
-				data[pixel_index/2] |= bits << shift;
-				row >>= 4;
-				
+				data[pixel_index/2] |= value << shift;
 			}
 		}
 

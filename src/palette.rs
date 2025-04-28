@@ -1,12 +1,9 @@
 
 
-use crate::{bucket, decompilation::read_jasc_palette, helpers::*, unbind};
-use std::{collections::{BTreeMap, BTreeSet}, f32::consts::TAU, fmt::Debug, fs::{exists, write}, i32, ops::{Index, IndexMut}, path::{Display, Iter, Path}, vec};
-use clap::builder::styling::Color;
-use image::{ImageFormat, ImageReader, Rgb, Rgba, RgbaImage};
+use crate::{bucket, helpers::*, unbind};
+use std::{collections::{BTreeMap, BTreeSet}, fmt::Debug, fs::{exists, write}, i32, ops::{Index, IndexMut}, path::Path, vec};
+use image::{ImageFormat, ImageReader, Rgba, RgbaImage};
 use oklab::Oklab;
-
-use super::tileset::Shape_indexable_tile;
 
 pub static palette_size_limit: u8 = 16;
 
@@ -28,14 +25,7 @@ impl Color_context {
 			self.insert_get_index(color);
 		}
 	}
-	// pub fn insert_palette_get_index_set(&mut self, palette: [Color32; 16]) -> Indexed_color_set {
-	// 	let mut set = Indexed_color_set::new();
-	// 	for color in palette {
-	// 		let index = self.insert_get_index(color);
-	// 		set.set_bit(index);
-	// 	}
-	// 	set
-	// }
+	
 	pub fn insert_get_index(&mut self, color: Color24) -> Color_index {
 		if let Some(index) = self.color_to_index.get(&color) {
 			return *index
@@ -202,20 +192,20 @@ impl From<Option<Color24>> for Gba_color {
 	}
 }
 
-pub fn read_palette_image(path: &Path) -> Vec<Vec<Option<Color24>>> {
+pub fn read_palette_image(path: &Path) -> Vec<[Option<Color24>; 16]> {
 	println!("{}", path.display());
 	let image_data = ImageReader::open(path).unwrap()
 		.with_guessed_format().unwrap()
 		.decode().unwrap()
 		.into_rgba8();
 	
-	let mut palette_collection = vec![vec![]; image_data.height() as usize];
+	let mut palette_collection = vec![[None;16]; image_data.height() as usize];
 
 	for y in 0..image_data.height() {
-		let mut palette = Vec::new();
+		let mut palette = [None;16];
 		for x in 0..image_data.width() {
 			let color_from = Color24::from_rgba(image_data.get_pixel(x, y).0);
-			palette.push(color_from);
+			palette[x as usize] = color_from;
 		}
 		
 		if palette.len() == palette_size_limit as usize {
@@ -284,6 +274,31 @@ impl IndexMut<Palette_index> for Palette_list {
 }
 
 impl Palette_list {
+	pub fn new() -> Self {
+		Palette_list(vec![])
+	}
+
+	pub fn from_overrides(overrides: Vec<[Option<Color24>; 16]>, color_context: &mut Color_context) -> Self {
+		let mut result: Vec<(Indexed_color_set, Palette_info)> = vec![];
+
+		for (i, palette) in overrides.into_iter().enumerate() {
+			if palette.len() > 0 {
+				let mut color_set = Indexed_color_set::new();
+				let mut color_map = BTreeMap::new();
+				for (c, color) in palette.into_iter().enumerate() {
+					if let Some(color) = color {
+						let color_index = color_context.insert_get_index(color);
+						color_set.set_bit(color_index);
+						color_map.insert(color_index, Position_in_palette::Absolute(c as u8));
+					}
+				}
+				result.push((color_set, Palette_info(color_map, Some(Palette_index(i as u8)))));
+			}
+		}
+		Palette_list(result)
+	}
+
+
 	pub fn insert_ics(&mut self, other: Indexed_color_set) {
 		let index = other;
 		let info = Palette_info(
@@ -847,9 +862,9 @@ pub fn write_jasc_palettes(
 }
 
 
-pub fn load_palette_overrides(color_context: &mut Color_context) -> Palette_list {
-	let pal_image_path = PathBuf::from("override_palette_path");
-	let pal_jasc_path = PathBuf::from("override_palette_path");
+pub fn load_palette_overrides(path: &Path) -> Vec<[Option<Color24>; 16]> {
+	let pal_image_path: PathBuf = path.join("palette_overrides.png");
+	let pal_jasc_path: PathBuf = path.join("palette_overrides");
 
 	let mut colors_sparse = vec![];
 
@@ -865,23 +880,8 @@ pub fn load_palette_overrides(color_context: &mut Color_context) -> Palette_list
 
 		write_palette_image(&pal_jasc_path.join("colors.png"), &colors_sparse);
 	}
-	let mut result = Vec::new();
 
-	for (i, palette) in colors_sparse.into_iter().enumerate() {
-		if palette.len() > 0 {
-			let mut color_set = Indexed_color_set::new();
-			let mut color_map = BTreeMap::new();
-			for (c, color) in palette.into_iter().enumerate() {
-				if let Some(color) = color {
-					let color_index = color_context.insert_get_index(color);
-					color_set.set_bit(color_index);
-					color_map.insert(color_index, Position_in_palette::Absolute(c as u8));
-				}
-			}
-			result.push((color_set, Palette_info(color_map, Some(Palette_index(i as u8)))));
-		}
-	}
-	Palette_list(result)
+	colors_sparse
 }
 
 
@@ -913,3 +913,38 @@ impl Color_row for Option<Vec<Option<Color24>>> {
 	}
 }
 
+
+pub fn read_jasc_palette<'a>(path: &Path) -> Result<Vec<Option<Color24>>> {
+  let text = std::fs::read_to_string(path).unwrap();
+  let mut lines = text.lines();
+  if lines.next() == Some("JASC-PAL") && lines.next() == Some("0100") {
+    let color_count = usize::from_str_radix(lines.next().unwrap(), 10).unwrap();
+    let mut colors = Vec::with_capacity(color_count);
+    for line in lines {
+      let mut color = [0u8;3];
+			let line = line.trim();
+			if line.trim() == "-" {
+				colors.push(None);
+			}
+			else {
+				for (c, num) in line.split(" ").enumerate() {
+					color[c] = u8::from_str_radix(num, 10).unwrap();
+				}
+				colors.push(Some(Color24::from(color)));
+			}
+    }
+    if colors.len() != color_count {
+			// return Err(Tiles_error::jasc_row_count_mismatch)
+			let file = path.file_name().unwrap().to_str().unwrap();
+			let color_rows = colors.len();
+			return Err(anyhow!(
+				"palette file {file} of size {color_count} does not match number of color rows {color_rows}"
+			))
+		}
+    return Ok(colors);
+  }
+  else {
+		// return Err(Tiles_error::jasc_bad_header)
+    return Err(anyhow!("missing JASC header on {}", path.display()))
+  }
+}
