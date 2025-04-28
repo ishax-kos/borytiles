@@ -150,7 +150,7 @@ impl Compile_tileset {
 					.join(primary_path)
 					.join(primary_name);
 
-				let primary_tiles = decompilation::load_tileset(&primary_path);
+				let primary_tiles = decompilation::load_tiles_png(&primary_path);
 
 				let layer_names = split_layer_names(&layer_names);
 			}
